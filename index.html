@@ -28,6 +28,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;h
 #url-input{flex:1;padding:.58rem .9rem;background:#1e293b;border:1.5px solid #334155;border-radius:8px;color:#e2e8f0;font-size:.85rem;outline:none;transition:border-color .15s;min-width:0}
 #url-input:focus{border-color:#3b82f6}
 #url-input::placeholder{color:#475569}
+#paste-btn{background:transparent;border:1.5px solid #334155;color:#94a3b8;padding:.55rem 1.2rem;border-radius:8px;font-size:.85rem;font-weight:600;cursor:pointer;transition:all .15s;width:100%;max-width:460px;text-align:center}
+#paste-btn:hover{border-color:#3b82f6;color:#3b82f6}
 
 /* ── Loading ── */
 #loading-overlay{display:none;position:fixed;inset:0;background:#0f172aee;z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:1rem}
@@ -124,7 +126,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;h
     <input type="url" id="url-input" placeholder="https://www.carfax.com/vehiclehistory/…" autocomplete="off" spellcheck="false">
     <button class="btn" type="submit">Load</button>
   </form>
-  <div class="privacy-note">PDFs are processed locally. URL reports are fetched via a CORS proxy (corsproxy.io) — only the URL is transmitted, not your personal data. Only public/shareable CARFAX links work; login-required reports will not load.</div>
+  <div class="or-divider">or import from clipboard</div>
+  <button id="paste-btn">📋 Paste CARFAX page text</button>
+  <div class="privacy-note">PDFs are processed locally in your browser. URL reports are fetched via a CORS proxy — only the URL is sent, not your personal data. If the URL fails, open your CARFAX report in a browser tab, press <strong>Cmd+A</strong> then <strong>Cmd+C</strong>, and click Paste above.</div>
 </div>
 
 <!-- App -->
@@ -703,6 +707,24 @@ async function handleFile(file) {
   }
 }
 
+// Try each proxy in order; return text of first success.
+const PROXIES = [
+  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+];
+
+async function fetchViaProxy(url) {
+  for (let i = 0; i < PROXIES.length; i++) {
+    setMsg(`Fetching via proxy ${i + 1} of ${PROXIES.length}…`);
+    try {
+      const res = await fetch(PROXIES[i](url), {signal: AbortSignal.timeout(10000)});
+      if (res.ok) return await res.text();
+    } catch(_) {}
+  }
+  throw new Error('All proxies failed — CARFAX is blocking automated requests for this URL.');
+}
+
 async function handleUrl(url) {
   if (!url.trim()) return;
   if (!url.includes('carfax.com')) {
@@ -711,28 +733,56 @@ async function handleUrl(url) {
   }
   showLoading('Fetching report…');
   try {
-    // CARFAX blocks direct cross-origin fetches; route through a CORS proxy.
-    const proxy = `https://corsproxy.io/?${encodeURIComponent(url.trim())}`;
-    setMsg('Fetching via proxy…');
-    const res = await fetch(proxy);
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    const html = await res.text();
-
+    const html = await fetchViaProxy(url.trim());
     setMsg('Parsing report…');
-    // Strip scripts/styles then pull plain text — the same parser handles it.
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script,style,noscript,iframe,svg').forEach(el => el.remove());
     const text = doc.body.textContent || '';
     const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 1);
-
     await processLines(lines, 'URL');
   } catch(err) {
     hideLoading();
     console.error(err);
     alert(
       'Could not load report: ' + err.message +
-      '\n\nOnly public/shareable CARFAX links work. Login-required reports cannot be fetched.'
+      '\n\nTip: open the CARFAX report in your browser, press Cmd+A then Cmd+C, then click "Paste CARFAX page text" to import it directly.'
     );
+  }
+}
+
+async function handlePaste() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text.trim()) { alert('Clipboard is empty. Copy the CARFAX page first (Cmd+A, Cmd+C).'); return; }
+    showLoading('Parsing pasted text…');
+    const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 1);
+    await processLines(lines, 'pasted text');
+  } catch(err) {
+    hideLoading();
+    // Clipboard permission denied — fall back to a textarea
+    const ta = document.createElement('textarea');
+    ta.placeholder = 'Paste CARFAX report text here (Cmd+V), then click OK…';
+    ta.style.cssText = 'width:100%;height:180px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:.75rem;font-size:.82rem;resize:none;display:block;margin-bottom:.75rem';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;inset:0;background:#0f172acc;z-index:9998;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem;gap:.75rem';
+    const okBtn = document.createElement('button');
+    okBtn.textContent = 'Parse Text';
+    okBtn.className = 'btn';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'background:none;border:none;color:#64748b;cursor:pointer;font-size:.85rem';
+    wrap.append(ta, okBtn, cancelBtn);
+    document.body.appendChild(wrap);
+    ta.focus();
+    okBtn.addEventListener('click', async () => {
+      const t = ta.value.trim();
+      document.body.removeChild(wrap);
+      if (!t) return;
+      showLoading('Parsing pasted text…');
+      const lines = t.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 1);
+      await processLines(lines, 'pasted text');
+    });
+    cancelBtn.addEventListener('click', () => document.body.removeChild(wrap));
   }
 }
 
@@ -776,6 +826,7 @@ document.getElementById('url-form').addEventListener('submit', e => {
   e.preventDefault();
   handleUrl(document.getElementById('url-input').value);
 });
+document.getElementById('paste-btn').addEventListener('click', handlePaste);
 dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
