@@ -278,15 +278,29 @@ async function extractLines(file) {
   return out;
 }
 
+// Normalize raw text from any source into the line array the parser expects.
+// Web pages use \t between table columns; replacing with \n lets the parser
+// treat each cell as its own line — exactly what it expects from the PDF path.
+function textToLines(raw) {
+  return raw
+    .replace(/\t/g, '\n')
+    .split(/[\n\r]+/)
+    .map(l => l.trim())
+    .filter(l => l.length > 1);
+}
+
 // ─── Parser ───────────────────────────────────────────────────────────────────
 
 const DATE_RE    = /^(\d{2}\/\d{2}\/\d{4})/;
 const MIL_RE     = /^\d{2}\/\d{2}\/\d{4}\s+([\d,]+)\s/;
+// Anchored to start of the cleaned line (after stripping leading non-word chars)
 const OWNER_RE   = /^Owner\s+(\d+)(?:\s|$)/;
 // City, ST — requires 2-letter uppercase state code at end
 const LOC_FULL   = /^([A-Z][A-Za-z.]+(?:\s+[A-Z][A-Za-z.]+)*),\s+([A-Z]{2})$/;
 // Same pattern embedded in a longer line (e.g. "California Motor Vehicle Dept. Palm Desert, CA")
 const LOC_EMBED  = /\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*),\s+([A-Z]{2})\b/;
+// Standalone integer — after tab-splitting a web page row this becomes the mileage cell
+const STANDALONE_NUM = /^[\d,]+$/;
 
 // Lines that are definitely NOT location lines
 const NOISE_RE = /verified reviews|customer favorites|^\d+[\s\/]\d|^\+?[\d\s\-().]{7,}$|^https?:|^page \d|carfax vehicle history|^\d+:\d+\s*[ap]m|looks like|that's a good|damage severity|minor\s+moderate\s+severe/i;
@@ -382,19 +396,26 @@ function parseLines(rawLines) {
       break;
     }
 
-    // ── Owner header — always process ──
-    const ownerM = line.match(OWNER_RE);
+    // ── Owner header — strip leading non-word chars (emoji, icons) before matching ──
+    const cleaned = line.replace(/^[^\w]+/, '');
+    const ownerM = cleaned.match(OWNER_RE);
     if (ownerM) {
       if (currentEvent) events.push(currentEvent);
       currentEvent = null;
       currentOwner = parseInt(ownerM[1]);
-      // Seeing "Owner 1" standalone unlocks event recording (start of Detailed History)
+      // Seeing "Owner 1" unlocks event recording (marks start of Detailed History)
       if (currentOwner === 1) seenOwner1 = true;
       continue;
     }
 
     // Don't record events until we've seen the Owner 1 section header
     if (!seenOwner1) continue;
+
+    // ── Standalone number after a date event = mileage cell from tab-split row ──
+    if (STANDALONE_NUM.test(line) && currentEvent && !currentEvent.mileage) {
+      currentEvent.mileage = line.replace(/,/g, '');
+      continue;
+    }
 
     // ── Date line → new event ──
     const dateM = line.match(DATE_RE);
@@ -663,7 +684,15 @@ async function processLines(lines, sourceLabel) {
   const { events, vehicleInfo } = parseLines(lines);
   if (!events.length) {
     hideLoading();
-    alert(`No events found in this ${sourceLabel}. Make sure it is a CARFAX report.`);
+    const ownerHits = lines.filter(l => /owner\s+\d/i.test(l)).slice(0, 3);
+    const datHits   = lines.filter(l => /^\d{2}\/\d{2}\/\d{4}/.test(l)).slice(0, 3);
+    alert(
+      `No events found in this ${sourceLabel}.\n\n` +
+      `Lines received: ${lines.length}\n` +
+      `"Owner N" lines: ${ownerHits.length ? ownerHits.join(' | ') : 'none found'}\n` +
+      `Date lines: ${datHits.length ? datHits.join(' | ') : 'none found'}\n\n` +
+      `First 4 lines:\n${lines.slice(0,4).join('\n')}`
+    );
     return;
   }
 
@@ -738,8 +767,7 @@ async function handleUrl(url) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script,style,noscript,iframe,svg').forEach(el => el.remove());
     const text = doc.body.textContent || '';
-    const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 1);
-    await processLines(lines, 'URL');
+    await processLines(textToLines(text), 'URL');
   } catch(err) {
     hideLoading();
     console.error(err);
@@ -755,8 +783,7 @@ async function handlePaste() {
     const text = await navigator.clipboard.readText();
     if (!text.trim()) { alert('Clipboard is empty. Copy the CARFAX page first (Cmd+A, Cmd+C).'); return; }
     showLoading('Parsing pasted text…');
-    const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 1);
-    await processLines(lines, 'pasted text');
+    await processLines(textToLines(text), 'pasted text');
   } catch(err) {
     hideLoading();
     // Clipboard permission denied — fall back to a textarea
@@ -779,8 +806,7 @@ async function handlePaste() {
       document.body.removeChild(wrap);
       if (!t) return;
       showLoading('Parsing pasted text…');
-      const lines = t.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 1);
-      await processLines(lines, 'pasted text');
+      await processLines(textToLines(t), 'pasted text');
     });
     cancelBtn.addEventListener('click', () => document.body.removeChild(wrap));
   }
