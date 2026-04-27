@@ -405,8 +405,10 @@ function parseLines(rawLines) {
     if (/^[a-zA-Z0-9.-]+\.(com|org|net|io)(\/[^\s]*)?$/.test(line)) continue;
 
     // ── Stop at Glossary / footer — nothing useful after this ──
-    // Guard with seenAnyOwner so nav "Glossary" links before event data don't terminate early.
-    if (seenAnyOwner && (
+    // Guard on having recorded at least one event (or being mid-event) so that nav quicklinks
+    // like "Glossary" that appear in the page header before any event data don't terminate early.
+    // Note: seenAnyOwner alone is insufficient because summary tables set it before events start.
+    if ((events.length > 0 || currentEvent !== null) && (
         /^glossary$/i.test(line) ||
         /^have questions/i.test(line) ||
         /^follow us:/i.test(line) ||
@@ -499,8 +501,8 @@ function parseLines(rawLines) {
   }
 
   const withLoc = events.filter(e => e.location);
-  console.log('[CarMap] events with location:', withLoc.length);
-  return { events: withLoc, vehicleInfo };
+  console.log('[CarMap] events with location:', withLoc.length, '/', events.length);
+  return { events: withLoc, vehicleInfo, rawCount: events.length };
 }
 
 // ─── Geocoding ────────────────────────────────────────────────────────────────
@@ -709,7 +711,7 @@ document.getElementById('filter-bar').addEventListener('click', e => {
 // ─── Main flow ────────────────────────────────────────────────────────────────
 
 async function processLines(lines, sourceLabel) {
-  const { events, vehicleInfo } = parseLines(lines);
+  const { events, vehicleInfo, rawCount } = parseLines(lines);
   if (!events.length) {
     hideLoading();
     const ownerHits = lines.filter(l => /owner\s+\d/i.test(l)).slice(0, 3);
@@ -717,6 +719,7 @@ async function processLines(lines, sourceLabel) {
     alert(
       `No events found in this ${sourceLabel}.\n\n` +
       `Lines received: ${lines.length}\n` +
+      `Events parsed (before location filter): ${rawCount}\n` +
       `"Owner N" lines: ${ownerHits.length ? ownerHits.join(' | ') : 'none found'}\n` +
       `Date lines: ${datHits.length ? datHits.join(' | ') : 'none found'}\n\n` +
       `First 4 lines:\n${lines.slice(0,4).join('\n')}`
