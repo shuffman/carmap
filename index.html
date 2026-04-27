@@ -21,7 +21,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;h
 .btn{display:inline-block;padding:.55rem 1.3rem;background:#3b82f6;color:#fff;border:none;border-radius:8px;font-size:.88rem;font-weight:600;cursor:pointer;transition:background .15s}
 .btn:hover{background:#2563eb}
 #file-input{display:none}
-.privacy-note{font-size:.72rem;color:#334155;text-align:center;max-width:380px}
+.privacy-note{font-size:.72rem;color:#334155;text-align:center;max-width:460px}
+.or-divider{display:flex;align-items:center;gap:.9rem;color:#334155;font-size:.78rem;width:100%;max-width:460px}
+.or-divider::before,.or-divider::after{content:'';flex:1;border-top:1px solid #1e293b}
+#url-form{display:flex;gap:.5rem;width:100%;max-width:460px}
+#url-input{flex:1;padding:.58rem .9rem;background:#1e293b;border:1.5px solid #334155;border-radius:8px;color:#e2e8f0;font-size:.85rem;outline:none;transition:border-color .15s;min-width:0}
+#url-input:focus{border-color:#3b82f6}
+#url-input::placeholder{color:#475569}
 
 /* ── Loading ── */
 #loading-overlay{display:none;position:fixed;inset:0;background:#0f172aee;z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:1rem}
@@ -113,7 +119,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;h
     <button class="btn" id="pick-btn">Choose PDF</button>
     <input type="file" id="file-input" accept=".pdf">
   </div>
-  <div class="privacy-note">Your report is processed entirely in your browser — nothing is uploaded to any server.</div>
+  <div class="or-divider">or paste a shareable CARFAX URL</div>
+  <form id="url-form">
+    <input type="url" id="url-input" placeholder="https://www.carfax.com/vehiclehistory/…" autocomplete="off" spellcheck="false">
+    <button class="btn" type="submit">Load</button>
+  </form>
+  <div class="privacy-note">PDFs are processed locally. URL reports are fetched via a CORS proxy (corsproxy.io) — only the URL is transmitted, not your personal data. Only public/shareable CARFAX links work; login-required reports will not load.</div>
 </div>
 
 <!-- App -->
@@ -644,48 +655,84 @@ document.getElementById('filter-bar').addEventListener('click', e => {
 
 // ─── Main flow ────────────────────────────────────────────────────────────────
 
+async function processLines(lines, sourceLabel) {
+  const { events, vehicleInfo } = parseLines(lines);
+  if (!events.length) {
+    hideLoading();
+    alert(`No events found in this ${sourceLabel}. Make sure it is a CARFAX report.`);
+    return;
+  }
+
+  const locs = events.map(e => e.location).filter(Boolean);
+  const geo  = await geocodeAll(locs, (done, total, msg) => {
+    setMsg(msg.startsWith('Geocoding') ? msg : `Geocoding locations… ${done}/${total}`);
+  });
+
+  let hasCoords = false;
+  for (const ev of events) {
+    if (ev.location && geo[ev.location]) {
+      ev.coords = geo[ev.location]; hasCoords = true;
+    }
+  }
+
+  if (!hasCoords) {
+    hideLoading();
+    alert('Could not geocode any locations from this report.');
+    return;
+  }
+
+  allEvents = events;
+  showApp();
+  setMsg('Rendering map…');
+  renderSidebar(events, vehicleInfo);
+  renderMap(events);
+  hideLoading();
+}
+
 async function handleFile(file) {
   if (!file || !file.name.endsWith('.pdf')) { alert('Please upload a PDF file.'); return; }
   showLoading('Reading PDF…');
   try {
     const rawLines = await extractLines(file);
     setMsg('Parsing report…');
-
-    const { events, vehicleInfo } = parseLines(rawLines);
-    if (!events.length) {
-      hideLoading();
-      alert('No events found. Make sure this is a CARFAX report PDF.');
-      return;
-    }
-
-    const locs = events.map(e => e.location).filter(Boolean);
-    const geo  = await geocodeAll(locs, (done, total, msg) => {
-      setMsg(msg.startsWith('Geocoding') ? msg : `Geocoding locations… ${done}/${total}`);
-    });
-
-    let hasCoords = false;
-    for (const ev of events) {
-      if (ev.location && geo[ev.location]) {
-        ev.coords = geo[ev.location]; hasCoords = true;
-      }
-    }
-
-    if (!hasCoords) {
-      hideLoading();
-      alert('Could not geocode any locations from this report.');
-      return;
-    }
-
-    allEvents = events;
-    showApp();
-    setMsg('Rendering map…');
-    renderSidebar(events, vehicleInfo);
-    renderMap(events);
-    hideLoading();
+    await processLines(rawLines, 'PDF');
   } catch(err) {
     hideLoading();
     console.error(err);
     alert('Error: ' + err.message);
+  }
+}
+
+async function handleUrl(url) {
+  if (!url.trim()) return;
+  if (!url.includes('carfax.com')) {
+    alert('Please enter a carfax.com report URL.');
+    return;
+  }
+  showLoading('Fetching report…');
+  try {
+    // CARFAX blocks direct cross-origin fetches; route through a CORS proxy.
+    const proxy = `https://corsproxy.io/?${encodeURIComponent(url.trim())}`;
+    setMsg('Fetching via proxy…');
+    const res = await fetch(proxy);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const html = await res.text();
+
+    setMsg('Parsing report…');
+    // Strip scripts/styles then pull plain text — the same parser handles it.
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script,style,noscript,iframe,svg').forEach(el => el.remove());
+    const text = doc.body.textContent || '';
+    const lines = text.split(/[\n\r]+/).map(l => l.trim()).filter(l => l.length > 1);
+
+    await processLines(lines, 'URL');
+  } catch(err) {
+    hideLoading();
+    console.error(err);
+    alert(
+      'Could not load report: ' + err.message +
+      '\n\nOnly public/shareable CARFAX links work. Login-required reports cannot be fetched.'
+    );
   }
 }
 
@@ -712,6 +759,7 @@ function resetApp() {
   if (map) { map.eachLayer(l => { if (l instanceof L.Marker) l.remove(); }); }
   document.querySelectorAll('.filter-btn').forEach((b,i) => b.classList.toggle('active', i===0));
   document.getElementById('file-input').value = '';
+  document.getElementById('url-input').value = '';
 }
 
 // ─── Event wiring ─────────────────────────────────────────────────────────────
@@ -724,6 +772,10 @@ document.getElementById('pick-btn').addEventListener('click', e => {
   fileInput.click();
 });
 dropZone.addEventListener('click', () => fileInput.click());
+document.getElementById('url-form').addEventListener('submit', e => {
+  e.preventDefault();
+  handleUrl(document.getElementById('url-input').value);
+});
 dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
