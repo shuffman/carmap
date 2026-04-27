@@ -293,14 +293,23 @@ function textToLines(raw) {
 
 const DATE_RE    = /^(\d{2}\/\d{2}\/\d{4})/;
 const MIL_RE     = /^\d{2}\/\d{2}\/\d{4}\s+([\d,]+)\s/;
-// Anchored to start of the cleaned line (after stripping leading non-word chars)
-const OWNER_RE   = /^Owner\s+(\d+)(?:\s|$)/;
 // City, ST — requires 2-letter uppercase state code at end
 const LOC_FULL   = /^([A-Z][A-Za-z.]+(?:\s+[A-Z][A-Za-z.]+)*),\s+([A-Z]{2})$/;
 // Same pattern embedded in a longer line (e.g. "California Motor Vehicle Dept. Palm Desert, CA")
 const LOC_EMBED  = /\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*),\s+([A-Z]{2})\b/;
 // Standalone integer — after tab-splitting a web page row this becomes the mileage cell
 const STANDALONE_NUM = /^[\d,]+$/;
+
+// Match owner section headers in both formats:
+//   "Owner 1"  — PDF style and CARFAX summary tables
+//   "1st Owner" / "2nd Owner" / "3rd Owner" / "4th Owner" … — CARFAX web page detail section
+function matchOwnerHeader(line) {
+  let m = line.match(/^Owner\s+(\d+)(?:\s|$)/);
+  if (m) return parseInt(m[1]);
+  m = line.match(/^(\d+)(?:st|nd|rd|th)\s+Owner\b/i);
+  if (m) return parseInt(m[1]);
+  return null;
+}
 
 // Lines that are definitely NOT location lines
 const NOISE_RE = /verified reviews|customer favorites|^\d+[\s\/]\d|^\+?[\d\s\-().]{7,}$|^https?:|^page \d|carfax vehicle history|^\d+:\d+\s*[ap]m|looks like|that's a good|damage severity|minor\s+moderate\s+severe/i;
@@ -345,10 +354,11 @@ function parseLines(rawLines) {
   const vehicleInfo = {name:'', vin:'', mileage:''};
   let currentOwner = 1;
   let currentEvent = null;
-  // Gate on seeing a standalone "Owner 1" line — that's the start of Detailed History.
-  // Summary tables show "Owner 5" / "Owner 6" column headers first, which is fine;
-  // they just set currentOwner without enabling event recording.
-  let seenOwner1 = false;
+  // Gate on seeing ANY owner section header before recording events.
+  // Summary tables (Additional History, Title History) contain "Owner N" column labels
+  // but no MM/DD/YYYY date rows, so opening on the first owner label can't produce
+  // false event records — only the Detailed History section has actual date rows.
+  let seenAnyOwner = false;
 
   console.log('[CarMap] extracted lines:', rawLines.length);
   // Log first 60 lines for debugging
@@ -396,20 +406,19 @@ function parseLines(rawLines) {
       break;
     }
 
-    // ── Owner header — strip leading non-word chars (emoji, icons) before matching ──
+    // ── Owner header — strip leading non-word chars (emoji, icons) then try both formats ──
     const cleaned = line.replace(/^[^\w]+/, '');
-    const ownerM = cleaned.match(OWNER_RE);
-    if (ownerM) {
+    const ownerN = matchOwnerHeader(cleaned);
+    if (ownerN !== null) {
       if (currentEvent) events.push(currentEvent);
       currentEvent = null;
-      currentOwner = parseInt(ownerM[1]);
-      // Seeing "Owner 1" unlocks event recording (marks start of Detailed History)
-      if (currentOwner === 1) seenOwner1 = true;
+      currentOwner = ownerN;
+      seenAnyOwner = true;
       continue;
     }
 
-    // Don't record events until we've seen the Owner 1 section header
-    if (!seenOwner1) continue;
+    // Don't record events until we've seen at least one owner section header
+    if (!seenAnyOwner) continue;
 
     // ── Standalone number after a date event = mileage cell from tab-split row ──
     if (STANDALONE_NUM.test(line) && currentEvent && !currentEvent.mileage) {
@@ -461,7 +470,7 @@ function parseLines(rawLines) {
   }
   if (currentEvent) events.push(currentEvent);
 
-  console.log('[CarMap] raw events:', events.length, '  seenOwner1:', seenOwner1);
+  console.log('[CarMap] raw events:', events.length, '  seenAnyOwner:', seenAnyOwner);
   console.log('[CarMap] sample:', events.slice(0,3));
 
   // Post-process: classify, pick best comment, inherit location for locationless events
