@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CarMap v1.3.1 — Vehicle History Visualizer</title>
+<title>CarMap v1.3.2 — Vehicle History Visualizer</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -112,7 +112,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;h
 
 <!-- Upload -->
 <div id="upload-screen">
-  <div class="logo">Car<span>Map</span> <span style="font-size:1rem;font-weight:400;color:#475569;letter-spacing:0">v1.3.1</span></div>
+  <div class="logo">Car<span>Map</span> <span style="font-size:1rem;font-weight:400;color:#475569;letter-spacing:0">v1.3.2</span></div>
   <div class="tagline">Upload a CARFAX report PDF to see your vehicle's full history plotted on a map.</div>
   <div id="drop-zone">
     <div class="drop-icon">📄</div>
@@ -236,6 +236,22 @@ const GEO_CACHE = {
   'Salt Lake City, UT':[40.7608,-111.8910],
   'Albuquerque, NM':[35.0844,-106.6504],
   'Tucson, AZ':[32.2226,-110.9747],
+  'Gilbert, AZ':[33.3528,-111.7890],
+  'Chandler, AZ':[33.3062,-111.8413],
+  'Tempe, AZ':[33.4255,-111.9400],
+  'Mesa, AZ':[33.4152,-111.8315],
+  'Glendale, AZ':[33.5387,-112.1860],
+  'Peoria, AZ':[33.5806,-112.2374],
+  'Green Valley, AZ':[31.8530,-110.9927],
+  'Grapevine, TX':[32.9343,-97.0781],
+  'Colleyville, TX':[32.8884,-97.1503],
+  'Aledo, TX':[32.6959,-97.6072],
+  'Plano, TX':[33.0198,-96.6989],
+  'Frisco, TX':[33.1507,-96.8236],
+  'McKinney, TX':[33.1972,-96.6397],
+  'Irving, TX':[32.8141,-96.9489],
+  'Arlington, TX':[32.7357,-97.1081],
+  'Garland, TX':[32.9126,-96.6389],
   'Virginia Beach, VA':[36.8529,-75.9780],
   'Richmond, VA':[37.5407,-77.4360],
   'Baltimore, MD':[39.2904,-76.6122],
@@ -296,11 +312,13 @@ const MIL_RE     = /^\d{2}\/\d{2}\/\d{4}\s+([\d,]+)\s/;
 // City, ST — requires 2-letter uppercase state code at end
 const LOC_FULL   = /^([A-Z][A-Za-z.]+(?:\s+[A-Z][A-Za-z.]+)*),\s+([A-Z]{2})$/;
 // Same pattern embedded in a longer line (e.g. "California Motor Vehicle Dept. Palm Desert, CA")
-const LOC_EMBED  = /\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*),\s+([A-Z]{2})\b/;
+// Uses [a-z]+ (lowercase-only continuation) so "TexasGrapevine" stops at the capital G
+// and doesn't eat the real city name in web-page "City, StateNameCity, ST" lines.
+const LOC_EMBED  = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})\b/;
 // CARFAX web page prefixes each source cell with "City, FullStateName" — the abbreviated
 // City, ST then appears again at the END of that same line: "Commack, New YorkCommack, NY"
-// This regex finds it by anchoring to the end of the line (no word-boundary needed).
-const LOC_AT_END = /([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*),\s+([A-Z]{2})$/;
+// Anchored to end of line; [a-z]+ ensures we stop at capital letters inside concatenated words.
+const LOC_AT_END = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})$/;
 // Standalone integer — after tab-splitting a web page row this becomes the mileage cell
 const STANDALONE_NUM = /^[\d,]+$/;
 
