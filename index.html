@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CarMap — Vehicle History Visualizer</title>
+<title>CarMap v1.3.0 — Vehicle History Visualizer</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -112,7 +112,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;h
 
 <!-- Upload -->
 <div id="upload-screen">
-  <div class="logo">Car<span>Map</span></div>
+  <div class="logo">Car<span>Map</span> <span style="font-size:1rem;font-weight:400;color:#475569;letter-spacing:0">v1.3.0</span></div>
   <div class="tagline">Upload a CARFAX report PDF to see your vehicle's full history plotted on a map.</div>
   <div id="drop-zone">
     <div class="drop-icon">📄</div>
@@ -297,6 +297,10 @@ const MIL_RE     = /^\d{2}\/\d{2}\/\d{4}\s+([\d,]+)\s/;
 const LOC_FULL   = /^([A-Z][A-Za-z.]+(?:\s+[A-Z][A-Za-z.]+)*),\s+([A-Z]{2})$/;
 // Same pattern embedded in a longer line (e.g. "California Motor Vehicle Dept. Palm Desert, CA")
 const LOC_EMBED  = /\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*),\s+([A-Z]{2})\b/;
+// CARFAX web page prefixes each source cell with "City, FullStateName" — the abbreviated
+// City, ST then appears again at the END of that same line: "Commack, New YorkCommack, NY"
+// This regex finds it by anchoring to the end of the line (no word-boundary needed).
+const LOC_AT_END = /([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*),\s+([A-Z]{2})$/;
 // Standalone integer — after tab-splitting a web page row this becomes the mileage cell
 const STANDALONE_NUM = /^[\d,]+$/;
 
@@ -396,12 +400,18 @@ function parseLines(rawLines) {
     if (/minor damage is usually/i.test(line)) continue;
     if (/^[\d\s().+\-]{10,}$/.test(line)) continue;        // phone numbers
 
+    // ── Skip web-page column headers and noise ──
+    if (/^(?:Date|Mileage|Source|Comments|Full Glossary|Print|CARFAX)$/.test(line)) continue;
+    if (/^[a-zA-Z0-9.-]+\.(com|org|net|io)(\/[^\s]*)?$/.test(line)) continue;
+
     // ── Stop at Glossary / footer — nothing useful after this ──
-    if (/^glossary$/i.test(line) ||
+    // Guard with seenAnyOwner so nav "Glossary" links before event data don't terminate early.
+    if (seenAnyOwner && (
+        /^glossary$/i.test(line) ||
         /^have questions/i.test(line) ||
         /^follow us:/i.test(line) ||
         /carfax depends on its sources/i.test(line) ||
-        /^© 20\d\d carfax/i.test(line)) {
+        /^© 20\d\d carfax/i.test(line))) {
       if (currentEvent) { events.push(currentEvent); currentEvent = null; }
       break;
     }
@@ -458,6 +468,12 @@ function parseLines(rawLines) {
         const emb = line.match(LOC_EMBED);
         if (emb) {
           currentEvent.location = `${emb[1].trim()}, ${emb[2]}`;
+          continue;
+        }
+        // Web page format: "Commack, New YorkCommack, NY" — abbreviated City, ST at end
+        const atEnd = line.match(LOC_AT_END);
+        if (atEnd) {
+          currentEvent.location = `${atEnd[1].trim()}, ${atEnd[2]}`;
           continue;
         }
       }
@@ -552,7 +568,10 @@ function popupHtml(ev) {
     .slice(0,6)
     .map(l => `<li>${l}</li>`).join('');
   return `
-    <div><span class="popup-type-badge" style="background:${cfg.color}22;color:${cfg.color}">${cfg.label}</span></div>
+    <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
+      <span class="popup-type-badge" style="background:${cfg.color}22;color:${cfg.color};margin-bottom:0">${cfg.label}</span>
+      <span style="font-size:.68rem;color:#64748b">${fmtDate(ev.date)}</span>
+    </div>
     <div class="popup-title">${ev.mainComment || cfg.label}</div>
     <div class="popup-loc">📍 ${ev.location}${ev.locationInherited?' <span style="color:#64748b">(approx)</span>':''}</div>
     ${extra ? `<ul class="popup-comments">${extra}</ul>` : ''}
