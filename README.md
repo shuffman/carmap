@@ -1,5 +1,7 @@
 # CarMap
 
+**Live at [carmap.fulgent.org](https://carmap.fulgent.org)** — deployed on [Railway](https://railway.com) (Caddy static server; pushes to `main` auto-deploy).
+
 A client-side web app that parses a CARFAX vehicle history report PDF and plots the car's full history on an interactive map.
 
 Upload a CARFAX PDF and CarMap will extract every recorded event — ownership changes, service visits, accidents, sales, and inspections — geocode each location, and display them as color-coded markers on a map connected by the car's travel path.
