@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CarMap v1.3.2 — Vehicle History Visualizer</title>
+<title>CarMap v1.3.3 — Vehicle History Visualizer</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -112,7 +112,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;h
 
 <!-- Upload -->
 <div id="upload-screen">
-  <div class="logo">Car<span>Map</span> <span style="font-size:1rem;font-weight:400;color:#475569;letter-spacing:0">v1.3.2</span></div>
+  <div class="logo">Car<span>Map</span> <span style="font-size:1rem;font-weight:400;color:#475569;letter-spacing:0">v1.3.3</span></div>
   <div class="tagline">Upload a CARFAX report PDF to see your vehicle's full history plotted on a map.</div>
   <div id="drop-zone">
     <div class="drop-icon">📄</div>
@@ -302,23 +302,28 @@ function textToLines(raw) {
     .replace(/\t/g, '\n')
     .split(/[\n\r]+/)
     .map(l => l.trim())
-    .filter(l => l.length > 1);
+    // Keep single digits: a new car's first mileage cell can be "8"
+    .filter(l => l.length > 1 || /\d/.test(l));
 }
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
 
 const DATE_RE    = /^(\d{2}\/\d{2}\/\d{4})/;
-const MIL_RE     = /^\d{2}\/\d{2}\/\d{4}\s+([\d,]+)\s/;
+// Lookahead (not \s in the match) so mileage still parses when the line ends right after it
+const MIL_RE     = /^\d{2}\/\d{2}\/\d{4}\s+([\d,]+)(?=\s|$)/;
 // City, ST — requires 2-letter uppercase state code at end
 const LOC_FULL   = /^([A-Z][A-Za-z.]+(?:\s+[A-Z][A-Za-z.]+)*),\s+([A-Z]{2})$/;
-// Same pattern embedded in a longer line (e.g. "California Motor Vehicle Dept. Palm Desert, CA")
-// Uses [a-z]+ (lowercase-only continuation) so "TexasGrapevine" stops at the capital G
-// and doesn't eat the real city name in web-page "City, StateNameCity, ST" lines.
-const LOC_EMBED  = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})\b/;
+// City-name words: lowercase-only continuation so "TexasGrapevine" stops at the capital G,
+// plus explicit glued prefixes (McKinney, DeSoto, LaSalle, O'Fallon) and leading
+// abbreviations (St. Louis, Ft. Worth) so those aren't truncated to "Kinney"/"Louis".
+const CITY = String.raw`(?:(?:St|Ft|Mt)\.\s+)?(?:Mc|Mac|De|La|Le|El|O')?[A-Z][a-z]+(?:\s+(?:Mc|Mac|De|La|Le|El|O')?[A-Z][a-z]+)*`;
+// Embedded in a longer line (e.g. "California Motor Vehicle Dept. Palm Desert, CA")
+const LOC_EMBED  = new RegExp(String.raw`\b(${CITY}),\s+([A-Z]{2})\b`);
 // CARFAX web page prefixes each source cell with "City, FullStateName" — the abbreviated
-// City, ST then appears again at the END of that same line: "Commack, New YorkCommack, NY"
-// Anchored to end of line; [a-z]+ ensures we stop at capital letters inside concatenated words.
-const LOC_AT_END = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s+([A-Z]{2})$/;
+// City, ST then appears again at the END of that same line: "Commack, New YorkCommack, NY".
+// No leading \b: with glued names like "MissouriSt. Louis" there is no word boundary at
+// the "St", so this pattern must be allowed to start mid-concatenation.
+const LOC_AT_END = new RegExp(String.raw`(${CITY}),\s+([A-Z]{2})$`);
 // Standalone integer — after tab-splitting a web page row this becomes the mileage cell
 const STANDALONE_NUM = /^[\d,]+$/;
 
@@ -332,9 +337,6 @@ function matchOwnerHeader(line) {
   if (m) return parseInt(m[1]);
   return null;
 }
-
-// Lines that are definitely NOT location lines
-const NOISE_RE = /verified reviews|customer favorites|^\d+[\s\/]\d|^\+?[\d\s\-().]{7,}$|^https?:|^page \d|carfax vehicle history|^\d+:\d+\s*[ap]m|looks like|that's a good|damage severity|minor\s+moderate\s+severe/i;
 
 // Lines that are event comments (not locations)
 const COMMENT_START_RE = /^(vehicle|accident|title|new owner|first owner|passed|registration|odometer|loan|maintenance|recommended|emissions|safety inspection|oil|brake|tire|wheel|body|engine|pre-delivery|sold as|damage to|airbag|four wheel|heat shield|exterior|interior|serpentine|spark plug|wiper|back-up|door lock)/i;
@@ -359,7 +361,7 @@ function classifyType(lines) {
 
 function bestComment(commentLines) {
   const priority = [
-    'accident reported','vehicle sold','sold as a porsche','new owner reported',
+    'accident reported','vehicle sold','sold as a','new owner reported',
     'first owner reported','vehicle purchase reported','vehicle offered for sale',
     'passed emissions','passed safety','vehicle serviced','pre-delivery inspection',
     'title issued','registration issued','odometer reading',
@@ -478,22 +480,27 @@ function parseLines(rawLines) {
 
     // ── Location detection ──
     if (!currentEvent.location) {
+      // A standalone source line like "California Motor Vehicle Dept. Palm Desert, CA"
+      // also satisfies LOC_FULL; real city names are at most ~3 words, so longer
+      // matches fall through to the patterns below, which trim the source prefix.
       const full = line.match(LOC_FULL);
-      if (full) {
+      if (full && full[1].trim().split(/\s+/).length <= 3) {
         currentEvent.location = `${full[1].trim()}, ${full[2]}`;
         continue;
       }
       // Embedded: only on lines that don't look like pure comment lines
       if (!COMMENT_START_RE.test(line)) {
-        const emb = line.match(LOC_EMBED);
-        if (emb) {
-          currentEvent.location = `${emb[1].trim()}, ${emb[2]}`;
-          continue;
-        }
-        // Web page format: "Commack, New YorkCommack, NY" — abbreviated City, ST at end
+        // End-anchored first: web-page rows glue the full state name onto the city
+        // ("…MissouriSt. Louis, MO"); LOC_EMBED requires a word boundary and would
+        // only be able to start at "Louis", capturing a truncated city name.
         const atEnd = line.match(LOC_AT_END);
         if (atEnd) {
           currentEvent.location = `${atEnd[1].trim()}, ${atEnd[2]}`;
+          continue;
+        }
+        const emb = line.match(LOC_EMBED);
+        if (emb) {
+          currentEvent.location = `${emb[1].trim()}, ${emb[2]}`;
           continue;
         }
       }
@@ -532,7 +539,7 @@ async function geocodeSingle(location) {
   try {
     const url = `https://nominatim.openstreetmap.org/search?` +
       `city=${encodeURIComponent(city)}&state=${encodeURIComponent(state)}&country=USA&format=json&limit=1`;
-    const r = await fetch(url, {headers:{'User-Agent':'CarMap/1.0 (vehicle-history-visualizer)'}});
+    const r = await fetch(url);
     const data = await r.json();
     if (data[0]) {
       const coords = [parseFloat(data[0].lat), parseFloat(data[0].lon)];
@@ -580,20 +587,26 @@ function fmtDate(s) {
   return new Date(+y,+m-1,+d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
 }
 
+// Report text is untrusted (PDF, pasted text, or proxied HTML) — escape before innerHTML
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function popupHtml(ev) {
   const cfg = TYPE_CFG[ev.type] || TYPE_CFG.other;
   const oc  = OWNER_COLORS[(ev.owner-1) % OWNER_COLORS.length];
   const extra = ev.commentLines
     .filter(l => l !== ev.mainComment && l.length > 4 && !/^\d+\s*\//.test(l))
     .slice(0,6)
-    .map(l => `<li>${l}</li>`).join('');
+    .map(l => `<li>${esc(l)}</li>`).join('');
   return `
     <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
       <span class="popup-type-badge" style="background:${cfg.color}22;color:${cfg.color};margin-bottom:0">${cfg.label}</span>
       <span style="font-size:.68rem;color:#64748b">${fmtDate(ev.date)}</span>
     </div>
-    <div class="popup-title">${ev.mainComment || cfg.label}</div>
-    <div class="popup-loc">📍 ${ev.location}${ev.locationInherited?' <span style="color:#64748b">(approx)</span>':''}</div>
+    <div class="popup-title">${esc(ev.mainComment || cfg.label)}</div>
+    <div class="popup-loc">📍 ${esc(ev.location)}${ev.locationInherited?' <span style="color:#64748b">(approx)</span>':''}</div>
     ${extra ? `<ul class="popup-comments">${extra}</ul>` : ''}
     <div class="popup-footer">
       <span style="color:${oc};font-weight:700">Owner ${ev.owner}</span>
@@ -645,14 +658,18 @@ function renderMap(events) {
 
   // Fit bounds
   const bounds = L.latLngBounds(geo.map(e => e.coords));
-  map.fitBounds(bounds, {padding:[40,40]});
+  // maxZoom: a report whose events are all in one city would otherwise zoom to street level
+  map.fitBounds(bounds, {padding:[40,40], maxZoom:12});
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 function renderSidebar(events, vi) {
   document.getElementById('vehicle-name').textContent = vi.name || 'Vehicle History';
-  document.getElementById('vehicle-vin').textContent  = vi.vin ? `VIN: ${vi.vin}` : '';
+  document.getElementById('vehicle-vin').textContent  = [
+    vi.vin ? `VIN: ${vi.vin}` : '',
+    vi.mileage ? `${vi.mileage} mi` : '',
+  ].filter(Boolean).join(' · ');
 
   const owners    = new Set(events.map(e => e.owner)).size;
   const accidents = events.filter(e => e.type === 'accident').length;
@@ -681,8 +698,8 @@ function renderList(events) {
       </div>
       <div class="event-body">
         <div class="event-date">${fmtDate(ev.date)}</div>
-        <div class="event-title">${ev.mainComment || cfg.label}</div>
-        <div class="event-location">${ev.location}</div>
+        <div class="event-title">${esc(ev.mainComment || cfg.label)}</div>
+        <div class="event-location">${esc(ev.location)}</div>
       </div>
       <div class="owner-badge" style="background:${oc}22;color:${oc}">O${ev.owner}</div>
     </div>`;
@@ -772,7 +789,7 @@ async function processLines(lines, sourceLabel) {
 }
 
 async function handleFile(file) {
-  if (!file || !file.name.endsWith('.pdf')) { alert('Please upload a PDF file.'); return; }
+  if (!file || !/\.pdf$/i.test(file.name)) { alert('Please upload a PDF file.'); return; }
   showLoading('Reading PDF…');
   try {
     const rawLines = await extractLines(file);
@@ -805,7 +822,9 @@ async function fetchViaProxy(url) {
 
 async function handleUrl(url) {
   if (!url.trim()) return;
-  if (!url.includes('carfax.com')) {
+  let host = '';
+  try { host = new URL(url.trim()).hostname.toLowerCase(); } catch(_) {}
+  if (host !== 'carfax.com' && !host.endsWith('.carfax.com')) {
     alert('Please enter a carfax.com report URL.');
     return;
   }
@@ -827,14 +846,24 @@ async function handleUrl(url) {
   }
 }
 
-async function handlePaste() {
+async function parsePastedText(text) {
+  showLoading('Parsing pasted text…');
   try {
-    const text = await navigator.clipboard.readText();
-    if (!text.trim()) { alert('Clipboard is empty. Copy the CARFAX page first (Cmd+A, Cmd+C).'); return; }
-    showLoading('Parsing pasted text…');
     await processLines(textToLines(text), 'pasted text');
   } catch(err) {
     hideLoading();
+    console.error(err);
+    alert('Error: ' + err.message);
+  }
+}
+
+async function handlePaste() {
+  let text = null;
+  try { text = await navigator.clipboard.readText(); } catch(_) {}
+  if (text !== null) {
+    if (!text.trim()) { alert('Clipboard is empty. Copy the CARFAX page first (Cmd+A, Cmd+C).'); return; }
+    await parsePastedText(text);
+  } else {
     // Clipboard permission denied — fall back to a textarea
     const ta = document.createElement('textarea');
     ta.placeholder = 'Paste CARFAX report text here (Cmd+V), then click OK…';
@@ -854,8 +883,7 @@ async function handlePaste() {
       const t = ta.value.trim();
       document.body.removeChild(wrap);
       if (!t) return;
-      showLoading('Parsing pasted text…');
-      await processLines(textToLines(t), 'pasted text');
+      await parsePastedText(t);
     });
     cancelBtn.addEventListener('click', () => document.body.removeChild(wrap));
   }
